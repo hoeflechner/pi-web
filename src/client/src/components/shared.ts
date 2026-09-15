@@ -85,6 +85,8 @@ export interface CompletionItem {
   insertText: string;
   detail: string;
   description?: string;
+  /** Pi-style argument hint (e.g. `<PR-URL>`) for commands that declare one. */
+  argumentHint?: string;
   cursorOffset?: number;
 }
 
@@ -178,6 +180,8 @@ export const appStyles = css`
   button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
   .empty { margin: auto; color: var(--pi-muted); }
   .error { display: flex; gap: 8px; align-items: flex-start; padding: 10px 16px; border-bottom: 1px solid var(--pi-border); color: var(--pi-danger); }
+  .error.warning { border-bottom-color: var(--pi-warning-border); color: var(--pi-warning); background: var(--pi-warning-surface); }
+  .error.info { border-bottom-color: var(--pi-accent-border); color: var(--pi-text); background: var(--pi-selection-bg); }
   .error .error-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
   .error .error-dismiss { flex: 0 0 auto; padding: 0 6px; border: 0; background: none; color: inherit; line-height: 1.4; }
   .deprecation-notice { padding: 10px 16px; border-bottom: 1px solid var(--pi-border); color: var(--pi-warning); }
@@ -219,19 +223,6 @@ export const workspacePanelStyles = css`
   .workspace-label-item, .workspace-label-render, .workspace-label-separator { color: var(--pi-muted); }
   .workspace-label-link { color: var(--pi-accent); text-decoration: none; }
   .workspace-label-link:hover, .workspace-label-link:focus { text-decoration: underline; }
-  .toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--pi-border-muted); }
-  .toolbar button { margin-left: auto; }
-  .stale { border: 1px solid var(--pi-warning-border); border-radius: 999px; color: var(--pi-warning); padding: 1px 6px; font-size: 12px; }
-  .split { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: minmax(160px, 34%) minmax(0, 1fr); }
-  .list { min-height: 0; overflow: auto; border-bottom: 1px solid var(--pi-border); padding: 6px; }
-  .row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 4px; width: 100%; border: 0; border-radius: 5px; background: transparent; text-align: left; padding: 4px 6px 4px calc(6px + var(--depth, 0) * 14px); }
-  .row:hover, .row.selected { background: var(--pi-selection-bg); }
-  .row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .summary { margin: 4px 6px 8px; color: var(--pi-muted); }
-  /* File preview presentation lives in <workspace-file-viewer>'s own shadow root. */
-  .viewer { min-height: 0; overflow: auto; display: flex; flex-direction: column; }
-  pre { margin: 0; padding: 10px; overflow: auto; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-  p { margin: 10px; }
 `;
 
 /**
@@ -541,7 +532,9 @@ export const autocompleteStyles = css`
   button { display: grid; grid-template-columns: minmax(120px, 1fr) auto; gap: 4px 10px; width: 100%; border: 0; border-bottom: 1px solid var(--pi-border); border-radius: 0; background: transparent; color: var(--pi-text); padding: 8px 10px; text-align: left; cursor: pointer; }
   button:last-child { border-bottom: 0; }
   button.selected, button:hover { background: var(--pi-selection-bg); }
-  span { color: var(--pi-muted); font-size: 12px; }
+  .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .argument-hint { color: var(--pi-muted); font-size: 12px; }
+  .detail { color: var(--pi-muted); font-size: 12px; }
   small { grid-column: 1 / -1; color: var(--pi-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
@@ -569,6 +562,7 @@ export const promptEditorStyles = css`
   .markdown-editor .cm-content { min-height: 38px; padding: 8px 44px 8px 8px; caret-color: var(--pi-text); text-align: start; unicode-bidi: plaintext; }
   .markdown-editor .cm-line { padding: 0; unicode-bidi: plaintext; }
   .markdown-editor .cm-placeholder { color: var(--pi-dim); }
+  .markdown-editor .cm-argument-hint { color: var(--pi-dim); pointer-events: none; }
   .markdown-editor .cm-focused { outline: none; }
   /* drawSelection() renders the caret and selection itself, and CodeMirror's
      base colors for them assume a light editor (black caret, pale selection).

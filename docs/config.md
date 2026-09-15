@@ -15,7 +15,13 @@ Each PI WEB machine has its own config. When using Fleet/machine federation, Set
 
 Pi package settings are separate from PI WEB config. They live in Pi's package-manager settings on the target machine and are managed by Pi (`pi install`, `pi remove`, `pi update`) or **Settings → Pi packages**. In a federated setup, **Settings → Pi packages** targets the currently selected machine. The PI WEB `plugins` config key controls desired enablement/settings for discovered browser-only, server-only, and dual-entry PI WEB plugins on that machine; it does not install, remove, or update Pi packages.
 
-If you installed services with a custom config path, `pi-web start`, `pi-web restart`, and `pi-web doctor` automatically use the `PI_WEB_CONFIG` saved in those service definitions for their readiness checks. A nonempty `PI_WEB_CONFIG` supplied when invoking one of those commands overrides the installed path for that command. On systemd, these commands fail rather than guess if active drop-ins, `EnvironmentFile=` inputs, stale manager state, a different loaded fragment, or an effective environment mismatch make the loaded definition untrustworthy. On launchd, `start` and `doctor` likewise fail if an already-loaded label came from another plist or retains a different config path; `restart` reloads the installed plists and can repair that stale state. Rerun `pi-web install --config /path/to/config.json` after changing the managed path or after upgrading from a version that only applied it to the web service; this regenerates service files so the web/API and session daemon use the same config.
+If you installed services with a custom config path, `pi-web start`, `pi-web restart`, and `pi-web doctor` automatically use the `PI_WEB_CONFIG` saved in those service definitions for their readiness checks. A nonempty `PI_WEB_CONFIG` supplied when invoking one of those commands overrides the installed path for that command. On systemd, these commands fail rather than guess if `EnvironmentFile=` inputs, stale manager state, a different loaded fragment, or an effective environment mismatch make the loaded definition untrustworthy. Drop-ins that do not alter the inspected environment (such as distribution-provided global hardening drop-ins) are tolerated. On launchd, `start` and `doctor` likewise fail if an already-loaded label came from another plist or retains a different config path; `restart` reloads the installed plists and can repair that stale state. Rerun `pi-web install --config /path/to/config.json` after changing the managed path or after upgrading from a version that only applied it to the web service; this regenerates service files so the web/API and session daemon use the same config.
+
+## Startup model and thinking defaults
+
+Open the model or thinking-level selector and click a row’s star under **New session default** to save it for new sessions. A filled star marks the saved default. Clicking the option itself changes only the current session; setting the default leaves the current session unchanged.
+
+Defaults are saved in Pi’s global `settings.json` on the selected session’s machine (`~/.pi/agent/settings.json` by default), using `defaultProvider`, `defaultModel`, and `defaultThinkingLevel`. They apply to new sessions without restarting. Project `.pi/settings.json` overrides, explicit startup choices, and per-model thinking settings still take precedence. A default model must be enabled; otherwise startup falls back to the first enabled model. Resumed sessions keep their saved model and thinking level.
 
 ## Reverse-proxy deployment paths
 
@@ -425,7 +431,7 @@ The `plugins` key controls desired enablement and JSON settings for PI WEB brows
 }
 ```
 
-Plugins are enabled by default. `plugins.<id>.enabled: false` hides a browser-only entry on the next page load. For a server-backed entry, desired disablement takes effect on the next sessiond start; its paired browser entry continues to follow the still-active backend until that restart. Server settings are copied into sessiond's startup snapshot, and diagnostics expose only a fingerprint, never the values.
+Plugins are enabled by default. `plugins.<id>.enabled: false` hides a browser-only entry on the next page load. For a server-backed entry, desired disablement takes effect on the next sessiond start; its paired browser entry continues to follow the still-active backend until that restart. The bundled `pi-web.terminal` plugin is required during normal startup: ordinary config cannot disable it, and Settings renders it non-editable. Server settings are copied into sessiond's startup snapshot, and diagnostics expose only a fingerprint, never the values.
 
 #### Desired versus active plugin state
 
@@ -458,7 +464,7 @@ pi-web plugins safe-start set none --restart
 pi-web plugins safe-start clear --restart
 ```
 
-`disable` persists `plugins.<id>.enabled: false`. Safe-start state is stored under `serverPlugins.safeStart`: `bundled-only` filters external server packages before discovery/import, while `none` imports no server plugins and retains the kernel project-folder workspace. `clear` restores ordinary configured discovery on the next start. An unsupported `serverPlugins.safeStart` shape or value in otherwise valid JSON fails closed as effective `none`; use `safe-start show`, then `set` or `clear`, to repair it offline.
+`disable` persists `plugins.<id>.enabled: false`, but rejects required `pi-web.terminal` with no-plugin safe-start recovery guidance. Safe-start state is stored under `serverPlugins.safeStart`: `bundled-only` filters external server packages before discovery/import while still requiring bundled Terminal, whereas `none` imports no server plugins and retains the kernel project-folder and diagnosis/settings surfaces without Terminal or Terminal-backed commands. `clear` restores ordinary configured discovery on the next start. An unsupported `serverPlugins.safeStart` shape or value in otherwise valid JSON fails closed as effective `none`; use `safe-start show`, then `set` or `clear`, to repair it offline.
 
 `--restart` performs a restart only for a recognized safe installed-service plan; otherwise it prints manual instructions. The config mutation is durable before PI WEB attempts the restart. If the service-manager command itself fails, restart sessiond manually.
 

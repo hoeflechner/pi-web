@@ -5,12 +5,12 @@ export interface SessionDaemonShutdownLogger {
 export interface SessionDaemonShutdownDependencies {
   quiesceServer(): void | Promise<void>;
   serverPlugins: { stop(): void | Promise<void> };
-  terminals: { dispose(): void | Promise<void> };
   catalogRefresher: { dispose(): void | Promise<void> };
   auth: { dispose(): void | Promise<void> };
   sessions: { dispose(): void | Promise<void> };
   unreadStore: { flush(): void | Promise<void> };
   pushSubscriptions: { flush(): void | Promise<void> };
+  pluginBackends: { closeAll(): void | Promise<void> };
   closeServer(): void | Promise<void>;
 }
 
@@ -25,9 +25,9 @@ export async function runSessionDaemonShutdown(options: SessionDaemonShutdownOpt
   const { dependencies } = options;
   const operations: readonly (readonly [string, () => void | Promise<void>])[] = [
     ["quiesce server", () => dependencies.quiesceServer()],
-    ["dispose terminals", () => dependencies.terminals.dispose()],
     ["dispose catalog refresher", () => dependencies.catalogRefresher.dispose()],
     ["dispose sessions", () => dependencies.sessions.dispose()],
+    ["close plugin backend channels", () => dependencies.pluginBackends.closeAll()],
     ["close server", () => dependencies.closeServer()],
     ["stop server plugins", () => dependencies.serverPlugins.stop()],
     ["dispose auth", () => dependencies.auth.dispose()],
