@@ -67,6 +67,8 @@ export type ChatPart =
   | { type: "empty" };
 
 export interface ChatLine {
+  /** Durable session-tree entry; absent for optimistic or in-flight messages. */
+  entryId?: string;
   role: "user" | "assistant" | "tool" | "system" | "bash" | "skill";
   parts: ChatPart[];
   source?: "compaction" | "branch_summary";
@@ -191,8 +193,9 @@ export const appStyles = css`
 
 export const workspacePanelStyles = css`
   :host { display: flex; flex-direction: column; min-height: 0; color: var(--pi-text); background: var(--pi-bg); font: 13px system-ui, sans-serif; container-type: inline-size; }
-  header { flex: 0 0 auto; min-width: 0; border-bottom: 1px solid var(--pi-border); }
-  .workspace-header-scroll-frame { position: relative; min-width: 0; background: var(--pi-bg); }
+  header { display: flex; align-items: center; flex: 0 0 auto; min-width: 0; border-bottom: 1px solid var(--pi-border); }
+  .navigation-menu-button { flex: 0 0 auto; margin: 0 8px; }
+  .workspace-header-scroll-frame { flex: 1 1 auto; position: relative; min-width: 0; background: var(--pi-bg); }
   .workspace-header-scroll-frame::before, .workspace-header-scroll-frame::after { content: ""; position: absolute; top: 0; bottom: 0; z-index: 2; width: 18px; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
   .workspace-header-scroll-frame::before { left: 0; background: linear-gradient(90deg, color-mix(in srgb, var(--pi-shadow-strong) 55%, transparent) 0%, transparent 100%); }
   .workspace-header-scroll-frame::after { right: 0; background: linear-gradient(270deg, color-mix(in srgb, var(--pi-shadow-strong) 55%, transparent) 0%, transparent 100%); }
@@ -210,7 +213,6 @@ export const workspacePanelStyles = css`
   .tab-badge { flex: 0 0 auto; display: inline-block; min-width: 14px; border: 1px solid var(--pi-success-border); border-radius: 999px; background: var(--pi-success-surface); color: var(--pi-success); padding: 0 5px; font-size: 11px; line-height: 16px; text-align: center; }
   @container (max-width: 430px) {
     .tabs button.icon-tab { justify-content: center; padding-inline: 7px; }
-    .tabs button.icon-tab .tab-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
   }
   .panel-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
   .empty-state { box-sizing: border-box; width: min(100%, 380px); margin: auto; padding: 24px; display: grid; gap: 8px; color: var(--pi-muted); text-align: center; }
@@ -450,6 +452,8 @@ export const chatStyles = css`
   .msg-actions { flex: 0 0 auto; display: inline-flex; gap: 6px; opacity: 0; transition: opacity .12s ease; }
   .msg-action { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 14px system-ui, sans-serif; line-height: 1; cursor: pointer; }
   .msg-action:hover, .msg-action:focus { color: var(--pi-text); border-color: var(--pi-accent); }
+  .msg-action:disabled { opacity: .45; cursor: not-allowed; }
+  .msg-fork-icon { font-size: 17px; }
   .msg:hover > .msg-header .msg-actions, .msg:focus-within > .msg-header .msg-actions, .group-msg:hover > .msg-header .msg-actions, .group-msg:focus-within > .msg-header .msg-actions { opacity: 1; }
   .label { display: block; color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
   .msg-header .label { margin: 0; }
@@ -497,6 +501,7 @@ export const formattedTextStyles = css`
   .code-copy-button { position: absolute; top: 6px; right: 6px; z-index: 1; display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 14px system-ui, sans-serif; line-height: 1; cursor: pointer; }
   .code-copy-button:hover, .code-copy-button:focus { color: var(--pi-text); border-color: var(--pi-accent); }
   blockquote { border-left: 3px solid var(--pi-border); padding-left: 10px; color: var(--pi-muted); }
+  img { max-width: 100%; }
   a { color: var(--pi-accent); }
   h1, h2, h3, h4 { margin: 14px 0 8px; line-height: 1.2; }
   h1:first-child, h2:first-child, h3:first-child, h4:first-child { margin-top: 0; }

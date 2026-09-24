@@ -38,7 +38,7 @@ import { registerMachineRoutes } from "./machines/machineRoutes.js";
 import { registerMachineProxyRoutes } from "./machines/machineProxyRoutes.js";
 import { registerPluginBackendChannelProxyRoutes } from "./plugins/pluginBackendChannelProxyRoutes.js";
 import { installPluginBackendChannelWebSocketPayloadLimit } from "./webSocketBridge.js";
-import { registerPairedPluginBackendProxyRoutes, registerPluginBackendProxyRoutes } from "./plugins/pluginBackendProxyRoutes.js";
+import { registerPairedPluginBackendProxyRoutes } from "./plugins/pluginBackendProxyRoutes.js";
 import { proxyMachinePluginAsset, registerMachinePluginProxyRoutes } from "./machines/machinePluginProxyRoutes.js";
 import type { Project, WorkspaceEffectiveConfig, WorkspaceProviderResolution } from "./types.js";
 
@@ -66,23 +66,6 @@ interface LocalProjectRouteOptions {
 
 function registerLocalProjectRoutes(app: FastifyInstance, projects: ProjectService, workspaces: WorkspaceCatalog, prefix: string, options: LocalProjectRouteOptions = {}): void {
   app.get(`${prefix}/projects`, async () => projects.list());
-
-  app.post<{ Body: { name?: string; path: string; create?: boolean } }>(`${prefix}/projects`, async (request, reply) => {
-    try {
-      return await projects.add(request.body);
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  app.delete<{ Params: { projectId: string } }>(`${prefix}/projects/:projectId`, async (request, reply) => {
-    try {
-      await projects.close(request.params.projectId);
-      return { closed: true };
-    } catch (error) {
-      return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
-    }
-  });
 
   app.get<{ Querystring: { q?: string } }>(`${prefix}/project-directories`, async (request, reply) => {
     try {
@@ -233,6 +216,9 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
     const activeAgentProfile = await agentProfileProvider.getActiveAgentProfile();
     return getPiWebVersionStatus(sessionDaemon, activeAgentProfile.status === "available" ? { activeAgentProfile: activeAgentProfile.profile } : {});
   });
+  // Web readiness must not wait for sessiond: dev Compose starts the daemon
+  // only after the web-owned initial build and API startup have completed.
+  app.get("/api/pi-web/health", () => Promise.resolve({ ok: true }));
   app.get("/api/pi-web/runtime", async () => getPiWebRuntime(sessionDaemon));
   app.get("/api/plugins", async (_request, reply) => withProfileDependency(reply, () => piWebPlugins.plugins()));
   app.get("/api/machines/local/plugins", async (_request, reply) => withProfileDependency(reply, () => piWebPlugins.plugins()));
@@ -250,7 +236,6 @@ export async function buildApp(deps: AppDependencies = {}): Promise<FastifyInsta
 
   registerSessionProxyRoutes(app, sessionDaemon);
   registerSessionProxyRoutes(app, sessionDaemon, "/api/machines/local");
-  registerPluginBackendProxyRoutes(app, sessionDaemon);
   registerPairedPluginBackendProxyRoutes(app, sessionDaemon);
   registerPluginBackendChannelProxyRoutes(app, sessionDaemon);
   registerWorkspaceExplorerRoutes(app, projects, workspaces, "/api", { config: configService });

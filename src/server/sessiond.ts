@@ -26,15 +26,22 @@ import { SessionArchiveStore, defaultSessionArchiveFilePath } from "./sessions/s
 import { FileSessionUnreadPersistence, SessionUnreadStore, defaultSessionUnreadFilePath } from "./sessions/sessionUnreadStore.js";
 import { ProjectScopedSpawnTargetResolver } from "./sessions/spawnTargetResolver.js";
 import { ProjectService } from "./projects/projectService.js";
+import { ProjectLifecycleService } from "./projects/projectLifecycleService.js";
+import { registerProjectMutationRoutes } from "./sessiond/projectMutationRoutes.js";
 import { ProjectStore, projectStorePath } from "./storage/projectStore.js";
 import {
   eligibleWorkspaceProviderContributions,
   WorkspaceProviderRegistry,
 } from "./workspaces/workspaceProviderRegistry.js";
 import { sessiondSocketPath } from "../sessiond/config.js";
+import {
+  PI_WEB_HOST_PI_SESSIONS_CAPABILITY,
+  PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY,
+  PI_WEB_HOST_WORKSPACES_CAPABILITY,
+} from "../server-plugin-api.js";
 import { getPiWebRuntimeComponent } from "./piWebStatus.js";
 import { SESSIOND_RUNTIME_CAPABILITIES } from "../shared/capabilities.js";
-import { agentSessionDirEnvOverride, effectivePiWebConfig, maxUploadBytes, offlineModeEnabled, PI_CODING_AGENT_DIR_ENV, PI_CODING_AGENT_SESSION_DIR_ENV } from "../config.js";
+import { agentSessionDirEnvOverride, effectivePiWebConfig, maxUploadBytes, offlineModeEnabled, piWebDataDir, PI_CODING_AGENT_DIR_ENV, PI_CODING_AGENT_SESSION_DIR_ENV } from "../config.js";
 import { createFilePiWebConfigService } from "./configRoutes.js";
 import { createActiveAgentProfileDescriptor } from "../sessiond/activeAgentProfile.js";
 import { loadServerPluginRecoveryConfig } from "../serverPluginRecovery.js";
@@ -49,6 +56,13 @@ import { dockerEnvironmentPromptSections } from "./sessions/dockerEnvironmentFac
 import { PI_WEB_SESSION_ENV, sessionEnvironmentPromptSections } from "./sessions/sessionEnvironmentFacts.js";
 import { createServerPluginExecFile } from "./plugins/serverPluginExec.js";
 import { createServerPluginRuntime } from "./plugins/serverPluginRuntime.js";
+import { createServerPluginPiSessionsCapabilityFactory } from "./plugins/serverPluginPiSessionsCapability.js";
+import { createServerPluginPiSessionEventsCapabilityFactory } from "./plugins/serverPluginPiSessionEventsCapability.js";
+import { createServerPluginWorkspacesCapabilityFactory } from "./plugins/serverPluginWorkspacesCapability.js";
+import {
+  REQUIRED_TERMINAL_SERVICE_CAPABILITY,
+  unavailableRequiredTerminalService,
+} from "./terminals/requiredTerminalService.js";
 import {
   eligiblePluginBackendContributions,
   PluginBackendRegistry,
@@ -58,7 +72,7 @@ import { sessionServiceDependencies } from "./sessiond/sessionServiceDependencie
 import { registerWorkspaceCatalogRoutes } from "./sessiond/workspaceCatalogRoutes.js";
 import { registerPluginBackendChannelRoutes } from "./sessiond/pluginBackendChannelRoutes.js";
 import { installPluginBackendChannelWebSocketPayloadLimit } from "./webSocketBridge.js";
-import { registerPairedPluginBackendRoutes, registerPluginBackendRoutes } from "./sessiond/pluginBackendRoutes.js";
+import { registerPairedPluginBackendRoutes } from "./sessiond/pluginBackendRoutes.js";
 import { registerWorkspaceRemovalRoutes } from "./sessiond/workspaceRemovalRoutes.js";
 import { createWorkspaceProviderRuntimeSnapshot } from "./workspaces/workspaceCatalog.js";
 import { workspaceIdFor } from "./workspaces/workspaceIdentity.js";
@@ -198,7 +212,11 @@ async function createSessionDaemonRuntime() {
     logger: app.log,
     execFile: createServerPluginExecFile({ env: daemonEnvironment }),
     noticeSink: (source, input) => { serverNotices.record({ ...input, source }); },
+    dataDir: piWebDataDir(daemonEnvironment),
+    lateHostCapabilities: [PI_WEB_HOST_WORKSPACES_CAPABILITY, PI_WEB_HOST_PI_SESSIONS_CAPABILITY, PI_WEB_HOST_PI_SESSION_EVENTS_CAPABILITY],
   });
+  let sessionsForFailedConstruction: PiSessionService | undefined;
+  let projectLifecycleForFailedConstruction: ProjectLifecycleService | undefined;
   try {
     // Web Push: the subscription store always loads (subscriptions must survive restarts), while
     // delivery arms only when a complete VAPID credential set is present via file or env config.
@@ -242,22 +260,16 @@ async function createSessionDaemonRuntime() {
     catalogRefresher.start();
     auth.subscribe(() => { catalogRefresher.requestRefresh(); });
     const projects = new ProjectService(new ProjectStore(projectStorePath(daemonEnvironment)));
-    const providerHealth = await serverPlugins.inspectHealth();
+    // Only dependency-ready providers can define the aggregate topology. The
+    // runtime has already rejected any staged provider that depends on late
+    // host authority as a cycle, so this snapshot cannot omit a future owner.
+    const providerContributions = serverPlugins.providerContributions();
+    const providerPluginIds = providerContributions.map(({ pluginId }) => pluginId);
+    const providerHealth = await serverPlugins.inspectHealth(providerPluginIds);
     const workspaceProviders = new WorkspaceProviderRegistry({
-      contributions: eligibleWorkspaceProviderContributions(serverPlugins.providerContributions(), providerHealth),
+      contributions: eligibleWorkspaceProviderContributions(providerContributions, providerHealth),
       logger: app.log,
     });
-    const pluginBackends = new PluginBackendRegistry({
-      contributions: eligiblePluginBackendContributions(serverPlugins.pairedBackendContributions(), providerHealth),
-      workspaces: workspaceProviders,
-      logger: app.log,
-    });
-    const workspaceProviderRuntime = createWorkspaceProviderRuntimeSnapshot(
-      serverPlugins.healthRecords(),
-      providerHealth,
-      serverPlugins.safeStartLevel(),
-      serverPlugins.catalogDiagnostics(),
-    );
     const statusAttribution = new CachedWorkspaceAttribution({
       projects,
       workspaces: workspaceProviders,
@@ -273,11 +285,18 @@ async function createSessionDaemonRuntime() {
     // Every global subscriber is handed the current projection on connect, so a
     // browser never has to reconcile a snapshot fetch against live frames.
     eventHub.setGlobalJoinFrame(() => ({ type: "machine.status", status: machineStatus.snapshot() }));
-    // Unread state was loaded from disk above, so the projection is computed
-    // once at startup instead of waiting for the first change. It is not
-    // awaited: resolving it lists workspaces through provider plugins, and
-    // daemon startup must not depend on how long that takes.
-    machineStatus.notifyChanged();
+    const projectLifecycle: ProjectLifecycleService = new ProjectLifecycleService({
+      projects,
+      workspaces: workspaceProviders,
+      hasUnread: () => unreadStore.hasUnread(),
+      reconcileUnreadWorkspaces: (cwds): Promise<void> => sessions.reconcileUnreadWorkspaces(cwds),
+      logger: app.log,
+      onProjectsChanged: () => {
+        statusAttribution.invalidate();
+        machineStatus.notifyChanged();
+      },
+    });
+    projectLifecycleForFailedConstruction = projectLifecycle;
     const projectWorkspaceDeps = { projects, workspaces: workspaceProviders };
     const spawnTargets = config.spawnSessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
     const sessions = new PiSessionService(eventHub, sessionServiceDependencies({
@@ -309,13 +328,17 @@ async function createSessionDaemonRuntime() {
       extensionDialogsTimeoutMs: config.extensionDialogsTimeoutMs,
       notificationStore,
       unreadStore,
-      onUnreadChanged: () => { machineStatus.notifyChanged(); },
+      onUnreadChanged: (hasNewCompletion) => {
+        machineStatus.notifyChanged();
+        if (hasNewCompletion) projectLifecycle.scheduleCleanup();
+      },
       catalogRefreshStatus: catalogRefresher,
       sessionManager: createPiSessionManagerGateway({
         agentDir: activeAgentProfile.dir,
         env: daemonEnvironment,
       }),
     }));
+    sessionsForFailedConstruction = sessions;
     // Created after the session service so notification payloads can resolve a session's cwd into
     // a deep-link route; the resolver stays lazy (per-event), the creation order only names it.
     const push = createWebPushRuntime({
@@ -334,7 +357,36 @@ async function createSessionDaemonRuntime() {
       },
     });
     auth.subscribe((change) => { sessions.applyAuthChange(change); });
-    const terminals = serverPlugins.requiredTerminalService();
+    // Current workspace authority and session ownership become available at
+    // one atomic late boundary, so no dependent can start against a partial host.
+    await serverPlugins.resumeWithHostCapabilityFactories([
+      createServerPluginWorkspacesCapabilityFactory({ projects, workspaces: workspaceProviders }),
+      createServerPluginPiSessionsCapabilityFactory({ projects, workspaces: workspaceProviders, sessions }),
+      createServerPluginPiSessionEventsCapabilityFactory({ projects, workspaces: workspaceProviders, sessions }),
+    ]);
+    const providerPluginIdSet = new Set(providerPluginIds);
+    const remainingActivePluginIds = serverPlugins.healthRecords()
+      .filter(({ pluginId, state }) => state === "active" && !providerPluginIdSet.has(pluginId))
+      .map(({ pluginId }) => pluginId);
+    const remainingHealth = await serverPlugins.inspectHealth(remainingActivePluginIds);
+    const pluginHealth = Object.freeze([...providerHealth, ...remainingHealth]
+      .sort((left, right) => left.pluginId.localeCompare(right.pluginId)));
+    const pluginBackends = new PluginBackendRegistry({
+      contributions: eligiblePluginBackendContributions(serverPlugins.pairedBackendContributions(), pluginHealth),
+      workspaces: workspaceProviders,
+      logger: app.log,
+    });
+    const workspaceProviderRuntime = createWorkspaceProviderRuntimeSnapshot(
+      serverPlugins.healthRecords(),
+      pluginHealth,
+      serverPlugins.safeStartLevel(),
+      serverPlugins.catalogDiagnostics(),
+    );
+    // Render current state immediately; stale unread is collected in the background.
+    machineStatus.notifyChanged();
+    const terminals = serverPlugins.safeStartLevel() === "none"
+      ? unavailableRequiredTerminalService()
+      : serverPlugins.resolve(REQUIRED_TERMINAL_SERVICE_CAPABILITY);
     terminals.bindActivitySink({
       updateTerminal: (terminal) => { workspaceActivity.updateTerminal(terminal); },
       removeTerminal: (terminalId, cwd) => { workspaceActivity.removeTerminal(terminalId, cwd); },
@@ -355,7 +407,10 @@ async function createSessionDaemonRuntime() {
       await runSessionDaemonShutdown({
         logger: app.log,
         dependencies: {
-          quiesceServer: () => { serverQuiescing = true; },
+          quiesceServer: async () => {
+            serverQuiescing = true;
+            await projectLifecycle.closeAll();
+          },
           serverPlugins,
           catalogRefresher,
           auth,
@@ -363,6 +418,8 @@ async function createSessionDaemonRuntime() {
           unreadStore,
           pushSubscriptions: pushStore,
           pluginBackends,
+          workspaceProviders,
+          workspaceRemovals,
           closeServer: () => app.close(),
         },
         onFailure: () => { process.exitCode = 1; },
@@ -372,18 +429,26 @@ async function createSessionDaemonRuntime() {
       // next start discards it.
       await stateOwnership.release();
     };
-    return { eventHub, push, machineStatus, statusAttribution, auth, sessions, serverNotices, unreadStore, activeAgentProfile, runtimeComponent, catalogRefresher, serverPlugins, projects, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals, shutdown };
+    projectLifecycle.scheduleCleanup(); // One delayed pass for existing persisted unread, if any.
+    return { eventHub, push, machineStatus, statusAttribution, projectLifecycle, auth, sessions, serverNotices, unreadStore, activeAgentProfile, runtimeComponent, catalogRefresher, serverPlugins, projects, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals, shutdown };
   } catch (error) {
+    await projectLifecycleForFailedConstruction?.closeAll();
     try {
       await serverPlugins.stop();
     } catch (disposeError) {
       app.log.error({ err: disposeError }, "session daemon construction failed and server plugin disposal was incomplete");
     }
+    try {
+      await sessionsForFailedConstruction?.dispose();
+    } catch (disposeError) {
+      app.log.error({ err: disposeError }, "session daemon construction failed and PI session disposal was incomplete");
+    }
     throw error;
   }
 }
 
-function registerSessionDaemonRoutes({ eventHub, push, machineStatus, statusAttribution, auth, sessions, serverNotices, runtimeComponent, projects, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals }: SessionDaemonRuntime): void {
+function registerSessionDaemonRoutes({ eventHub, push, machineStatus, statusAttribution, projectLifecycle, auth, sessions, serverNotices, runtimeComponent, projects, workspaceProviders, pluginBackends, workspaceProviderRuntime, workspaceRemovals }: SessionDaemonRuntime): void {
+  registerProjectMutationRoutes(app, projectLifecycle);
   registerMachineStatusRoutes(app, machineStatus);
   registerServerNoticeRoutes(app, serverNotices);
   registerAuthRoutes(app, auth);
@@ -394,11 +459,6 @@ function registerSessionDaemonRoutes({ eventHub, push, machineStatus, statusAttr
     workspaces: workspaceProviders,
     providerRuntime: workspaceProviderRuntime,
   });
-  registerPluginBackendRoutes(app, {
-    projects,
-    backends: workspaceProviders,
-    onWorkspacesMutated: () => { statusAttribution.invalidate(); },
-  });
   registerPairedPluginBackendRoutes(app, {
     projects,
     backends: pluginBackends,
@@ -408,7 +468,10 @@ function registerSessionDaemonRoutes({ eventHub, push, machineStatus, statusAttr
   registerWorkspaceRemovalRoutes(app, {
     projects,
     removals: workspaceRemovals,
-    onWorkspacesMutated: () => { statusAttribution.invalidate(); },
+    onWorkspacesMutated: () => {
+      statusAttribution.invalidate();
+      projectLifecycle.scheduleCleanup();
+    },
   });
 
   app.get("/health", () => ({

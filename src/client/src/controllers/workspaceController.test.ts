@@ -177,7 +177,7 @@ describe("WorkspaceController route selection freshness", () => {
     const test = harness({ selectedMachine: machine("local"), projects: [repo] }, loadWorkspaces);
 
     const selection = test.controller.selectProject(repo, { navigation });
-    route = { ...route, view: "core:workspace.terminal" };
+    route = { ...route, view: "workspace" };
     resolveWorkspaces?.([main]);
     await selection;
 
@@ -451,16 +451,6 @@ describe("WorkspaceController.refreshSelectedProjectTopology", () => {
       }),
     },
     {
-      field: "provider request capability",
-      refresh: (selected: Workspace): Workspace => ({
-        ...selected,
-        provider: {
-          ...requireWorkspaceProvider(selected),
-          capabilities: { ...requireWorkspaceProvider(selected).capabilities, request: true },
-        },
-      }),
-    },
-    {
       field: "provider remove capability",
       refresh: (selected: Workspace): Workspace => ({
         ...selected,
@@ -493,7 +483,7 @@ describe("WorkspaceController.refreshSelectedProjectTopology", () => {
     const selected = workspace(repo.id, "/repo-feature", {
       provider: {
         pluginId: "owner",
-        capabilities: { request: false, remove: false },
+        capabilities: { remove: false },
         metadata: { nested: { marker: "old" }, list: [1, true] },
       },
       effectiveConfig: { uploads: { defaultFolder: "old-uploads" } },
@@ -555,7 +545,7 @@ describe("WorkspaceController.refreshSelectedProjectTopology", () => {
     const selected = workspace(repo.id, "/repo-feature", {
       provider: {
         pluginId: "owner",
-        capabilities: { request: true, remove: true },
+        capabilities: { remove: true },
         metadata: { nested: [1, { ready: true }] },
       },
       removal: { actionLabel: "Disconnect", confirmation: "Disconnect?", precondition: "v1.current" },
@@ -565,7 +555,7 @@ describe("WorkspaceController.refreshSelectedProjectTopology", () => {
     const equalSelected = workspace(repo.id, "/repo-feature", {
       provider: {
         pluginId: "owner",
-        capabilities: { request: true, remove: true },
+        capabilities: { remove: true },
         metadata: { nested: [1, { ready: true }] },
       },
       removal: { actionLabel: "Disconnect", confirmation: "Disconnect?", precondition: "v1.current" },

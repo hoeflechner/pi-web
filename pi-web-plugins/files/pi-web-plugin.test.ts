@@ -19,7 +19,8 @@ describe("Files plugin activation", () => {
     const panel = result.contributions.workspacePanels?.[0];
     const actions = result.contributions.actions ?? [];
 
-    expect(plugin).toMatchObject({ apiVersion: 2, name: "Files" });
+    expect(panel?.fileOpenQuery?.(createWorkspaceContext(), "reports/a #1.txt")).toEqual({ file: "reports/a #1.txt" });
+    expect(plugin).toMatchObject({ apiVersion: 4, name: "Files" });
     expect(panel).toMatchObject({
       id: "workspace.files",
       title: "Files",
@@ -79,26 +80,35 @@ describe("Files plugin activation", () => {
     expect(rendered.values).toContain(workspaceContext);
     expect(rendered.values).toContain(runtime);
 
-    const selectMainView = vi.fn<PluginRuntimeContext["selectMainView"]>();
+    const selectWorkspaceTool = vi.fn<PluginRuntimeContext["selectWorkspaceTool"]>();
     const refreshWorkspacePanels = vi.fn<PluginRuntimeContext["refreshWorkspacePanels"]>();
-    const actionContext = createRuntimeContext({ selectMainView, refreshWorkspacePanels });
+    const actionContext = createRuntimeContext({ selectWorkspaceTool, refreshWorkspacePanels });
     const view = result.contributions.actions?.find((action) => action.id === "view.files");
     const refresh = result.contributions.actions?.find((action) => action.id === "workspace.refresh-files");
 
     await view?.run(actionContext);
     await refresh?.run(actionContext);
 
-    expect(selectMainView).toHaveBeenCalledWith("files:workspace.files");
+    expect(selectWorkspaceTool).toHaveBeenCalledWith("files:workspace.files");
     expect(refreshWorkspacePanels).toHaveBeenCalledWith("files:workspace.files");
   });
 });
 
 function activationContext(runtimePluginId = "files"): PluginActivationContext {
-  return Object.freeze({ apiVersion: 2, pluginId: "files", runtimePluginId, html, svg });
+  return Object.freeze({
+    apiVersion: 4,
+    pluginId: "files",
+    runtimePluginId,
+    html,
+    svg,
+    signal: new AbortController().signal,
+    lifetimeSignal: new AbortController().signal,
+  });
 }
 
 function createRuntimeContext(overrides: Partial<PluginRuntimeContext> = {}): PluginRuntimeContext {
   const context = {
+    navigate: () => Promise.resolve(),
     state: { selectedWorkspace: { id: "workspace-1", projectId: "project-1", path: "/repo", label: "main", isMain: true } },
     prompt: { insertText: vi.fn(), getText: vi.fn(() => ""), getSelection: vi.fn(() => null) },
     openActionPalette: vi.fn(),
@@ -124,6 +134,7 @@ function createRuntimeContext(overrides: Partial<PluginRuntimeContext> = {}): Pl
 
 function createWorkspaceContext(): WorkspacePanelContext {
   return {
+    navigate: () => Promise.resolve(),
     machine: { id: "local", name: "Local", kind: "local" },
     workspace: { id: "workspace-1", projectId: "project-1", path: "/repo", label: "main", isMain: true },
     files: {

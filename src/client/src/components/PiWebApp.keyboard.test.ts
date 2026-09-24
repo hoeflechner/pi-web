@@ -8,6 +8,7 @@ import { AuthDialog } from "./AuthDialog";
 import { ChatView } from "./ChatView";
 import { ModalSurface } from "./ModalSurface";
 import { PiWebApp } from "./PiWebApp";
+import { PromptEditor } from "./PromptEditor";
 
 const IMAGE_DATA = "iVBORw0KGgo=";
 
@@ -20,8 +21,9 @@ afterEach(() => {
 });
 
 describe("PiWebApp global shortcut modality boundary", () => {
-  it("runs a global shortcut when the application has no rendered modal", () => {
+  it("runs a global shortcut when the application has no rendered modal", async () => {
     const app = new PiWebApp();
+    await waitForBuiltInPlugins(app);
     const target = appendKeyTarget();
     const targetKeyDown = vi.fn();
     target.addEventListener("keydown", targetKeyDown);
@@ -31,6 +33,28 @@ describe("PiWebApp global shortcut modality boundary", () => {
     expect(actionPaletteIsOpen(app)).toBe(true);
     expect(event.defaultPrevented).toBe(true);
     expect(targetKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("lets a composer send binding override an app shortcut only inside the editor", async () => {
+    const app = new PiWebApp();
+    await waitForBuiltInPlugins(app);
+    const editor = new PromptEditor();
+    editor.shortcuts = { "composer.send.desktop": "mod+k", "composer.send.mobile": "mod+k" };
+    editor.onSend = vi.fn();
+    document.body.append(editor);
+    await editor.updateComplete;
+    Object.defineProperty(app, "promptEditor", { configurable: true, value: editor });
+    editor.replaceText("Hello");
+    const target = requiredElement(editor.view?.contentDOM, "composer input");
+
+    dispatchShortcutThroughApp(app, target);
+    expect(editor.onSend).toHaveBeenCalledOnce();
+    expect(actionPaletteIsOpen(app)).toBe(false);
+    dispatchShortcutThroughApp(app, target); // Empty composer still owns the combination.
+    expect(actionPaletteIsOpen(app)).toBe(false);
+
+    dispatchShortcutThroughApp(app, appendKeyTarget());
+    expect(actionPaletteIsOpen(app)).toBe(true);
   });
 
   it("leaves capture-phase keyboard handling with a rendered shared modal", async () => {
@@ -62,8 +86,9 @@ describe("PiWebApp global shortcut modality boundary", () => {
     expect(targetKeyDown).toHaveBeenCalledOnce();
   });
 
-  it("does not suppress shortcuts for session-scoped state that cannot render", () => {
+  it("does not suppress shortcuts for session-scoped state that cannot render", async () => {
     const app = new PiWebApp();
+    await waitForBuiltInPlugins(app);
     setAppState(app, { modelDialog: { instanceId: 1, origin: { machineId: "local", sessionId: "session-1", cwd: "/repo" }, title: "Select model", options: [], catalog: [] } });
     const target = appendKeyTarget();
 
@@ -121,6 +146,12 @@ type FocusChatComposer = (this: PiWebApp) => Promise<void>;
 
 interface AutoFocusAppShell {
   shouldAutoFocusPrompt: () => boolean;
+}
+
+async function waitForBuiltInPlugins(app: PiWebApp): Promise<void> {
+  const ready: unknown = Reflect.get(app, "builtInPluginsReady");
+  if (!(ready instanceof Promise)) throw new Error("PiWebApp built-in plugin readiness was unavailable");
+  await ready;
 }
 
 function dispatchShortcutThroughApp(app: PiWebApp, target: HTMLElement): KeyboardEvent {
